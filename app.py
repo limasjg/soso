@@ -113,6 +113,11 @@ st.markdown("""<style>
         letter-spacing: -0.04em !important;
         text-align: center !important;
     }
+    [data-testid="stMetricDelta"],
+    [data-testid="stMetricDelta"] * {
+        color: #f8fafc !important;
+        opacity: 1 !important;
+    }
     .kpi-card {
         background: rgba(15, 23, 42, 0.8);
         border: 1px solid rgb(32 42 62) !important;
@@ -306,53 +311,52 @@ def dashboard(Sessao) -> None:
     col3.metric("Investido", moeda(investimento))
     col4.metric("Saldo do mês", moeda(saldo))
 
-    left, right = st.columns([1.5, 1.2])
-    with left:
-        painel_patrimonio = st.container(border=True)
-        painel_patrimonio.markdown('<div class="panel-title">Total Investido</div>', unsafe_allow_html=True)
-        valor_por_mes = dados_ano.pivot_table(index="mes", columns="tipo", values="valor", aggfunc="sum", fill_value=0).sort_index().reset_index()
-        if "mes" in valor_por_mes.columns:
-            valor_por_mes["mes"] = pd.to_datetime(valor_por_mes["mes"])
-            valor_por_mes["liquido"] = valor_por_mes.get("receita", 0) - valor_por_mes.get("despesa", 0) - valor_por_mes.get("investimento", 0)
-            valor_por_mes["liquido_acumulado"] = valor_por_mes["liquido"].cumsum()
+    periodo_final = pd.Period(hoje, freq="M") if ano == ano_atual else pd.Period(f"{ano}-12", freq="M")
+    meses_grafico = pd.period_range(f"{ano}-01", periodo_final, freq="M").to_timestamp()
+    mensal = (
+        dados_ano.pivot_table(index="mes", columns="tipo", values="valor", aggfunc="sum", fill_value=0)
+        .reindex(meses_grafico, fill_value=0)
+        .rename_axis("mes")
+    )
+    for tipo in ("receita", "despesa", "investimento"):
+        if tipo not in mensal.columns:
+            mensal[tipo] = 0.0
 
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(x=valor_por_mes["mes"], y=valor_por_mes["liquido_acumulado"], mode="lines", name="Patrimônio", line=dict(color="#34d399", width=3), fill="tozeroy"))
-        fig.update_layout(
-            template="plotly_dark",
-            paper_bgcolor="rgba(0,0,0,0)",
-            plot_bgcolor="rgba(0,0,0,0)",
-            margin=dict(l=15, r=15, t=10, b=10),
-            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
-            xaxis=dict(title="Mês", showgrid=False, type="date", tickformat="%b"),
-            yaxis=dict(title="Patrimônio", showgrid=True, gridcolor="rgba(148,163,184,0.12)"),
-            font={"color": "#e2e8f0"},
+    painel_anual = st.container(border=True)
+    painel_anual.markdown('<div class="panel-title">Receitas, despesas e fluxos</div>', unsafe_allow_html=True)
+
+    for coluna, (tipo, titulo) in zip(
+        painel_anual.columns(3),
+        [("receita", "Receita total"), ("despesa", "Despesas totais"), ("investimento", "Total investido")],
+    ):
+        total = float(mensal[tipo].sum())
+        media = float(mensal[tipo].mean())
+        coluna.metric(titulo, moeda(total), delta=f"Média mensal: {moeda(media)}", delta_color="off")
+
+    fig_anual = go.Figure()
+    for tipo, nome, cor in [
+        ("receita", "Receita", "#22c55e"),
+        ("despesa", "Despesas", "#f87171"),
+        ("investimento", "Investimento", "#60a5fa"),
+    ]:
+        fig_anual.add_trace(
+            go.Bar(x=mensal.index, y=mensal[tipo].astype(float), name=nome, marker_color=cor, opacity=0.82)
         )
-        painel_patrimonio.plotly_chart(fig, use_container_width=True)
-
-    with right:
-        painel_fluxo = st.container(border=True)
-        painel_fluxo.markdown('<div class="panel-title">Receita, despesas e fluxo</div>', unsafe_allow_html=True)
-        mensal = dados_ano.pivot_table(index="mes", columns="tipo", values="valor", aggfunc="sum", fill_value=0).sort_index().reset_index()
-        if "mes" in mensal.columns:
-            mensal["mes"] = pd.to_datetime(mensal["mes"])
-
-        fig2 = go.Figure()
-        for tipo, nome, cor in [("receita", "Receita", "#22c55e"), ("despesa", "Despesas", "#f87171"), ("investimento", "Investimento", "#60a5fa")]:
-            if tipo in mensal.columns:
-                fig2.add_trace(go.Bar(x=mensal["mes"], y=mensal[tipo].astype(float), name=nome, marker_color=cor, opacity=0.82))
-        fig2.update_layout(
-            template="plotly_dark",
-            paper_bgcolor="rgba(0,0,0,0)",
-            plot_bgcolor="rgba(0,0,0,0)",
-            margin=dict(l=15, r=15, t=10, b=10),
-            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
-            barmode="group",
-            xaxis=dict(title="Mês", showgrid=False, type="date", tickformat="%b"),
-            yaxis=dict(title="Valor (R$)", showgrid=True, gridcolor="rgba(148,163,184,0.12)"),
-            font={"color": "#e2e8f0"},
-        )
-        painel_fluxo.plotly_chart(fig2, use_container_width=True)
+    fig_anual.update_layout(
+        template="plotly_dark",
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        margin=dict(l=15, r=15, t=20, b=10),
+        legend=dict(
+            orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0,
+            font=dict(color="#f8fafc"),
+        ),
+        barmode="group",
+        xaxis=dict(title="Mês", showgrid=False, type="date", tickformat="%b"),
+        yaxis=dict(title="Valor (R$)", showgrid=True, gridcolor="rgba(148,163,184,0.12)"),
+        font={"color": "#e2e8f0"},
+    )
+    painel_anual.plotly_chart(fig_anual, use_container_width=True)
 
     painel_fixos = st.container(border=True)
     painel_fixos.markdown('<div class="panel-title">Planilha de gastos fixos</div>', unsafe_allow_html=True)
