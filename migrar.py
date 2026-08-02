@@ -13,7 +13,7 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 import openpyxl
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
 from database import Categoria, GastoFixo, Lancamento, criar_engine, criar_sessao, criar_tabelas
 
@@ -71,6 +71,68 @@ def abas_anuais(workbook) -> list[tuple[int, object]]:
     return resultado
 
 
+def cabecalhos_mensais(aba) -> list[tuple[int, int, int]]:
+    """Localiza os blocos cujo cabeçalho é um mês e cuja tabela começa abaixo."""
+    encontrados = []
+    for linha in aba.iter_rows():
+        for celula in linha:
+            mes = MESES.get(normalizar(celula.value))
+            if not mes:
+                continue
+            if (
+                normalizar(aba.cell(celula.row + 1, celula.column).value) == "contas"
+                and normalizar(aba.cell(celula.row + 1, celula.column + 1).value) == "valor"
+            ):
+                encontrados.append((mes, celula.row, celula.column))
+    return encontrados
+
+
+def extrair_bloco_mensal(aba, ano: int, mes: int, linha_cabecalho: int, coluna: int) -> list[tuple]:
+    """Extrai contas e o resumo de ganho/investimento de um bloco mensal."""
+    registros = []
+    linha = linha_cabecalho + 2
+
+    # A tabela de contas é contínua e termina na primeira linha vazia.
+    while linha <= aba.max_row:
+        descricao = texto(aba.cell(linha, coluna).value)
+        valor = para_decimal(aba.cell(linha, coluna + 1).value)
+        if not descricao and valor is None:
+            break
+        chave = normalizar(descricao)
+        if descricao and valor is not None and valor > 0 and chave not in IGNORAR:
+            registros.append((ano, mes, descricao, valor, "despesa"))
+        linha += 1
+
+    # Depois da linha vazia há o resumo. Nele, somente Ganho e Investido são
+    # lançamentos; Pessoal e Contas são totais e não devem ser duplicados.
+    for linha_resumo in range(linha + 1, (aba.max_row or 0) + 1):
+        descricao = texto(aba.cell(linha_resumo, coluna).value)
+        chave = normalizar(descricao)
+        if chave in MESES:
+            break
+        if chave not in ROTULOS_RECEITA | ROTULOS_INVESTIMENTO:
+            continue
+        valor = para_decimal(aba.cell(linha_resumo, coluna + 1).value)
+        if valor is not None and valor > 0:
+            registros.append((ano, mes, descricao, valor, tipo_do_rotulo(descricao)))
+    return registros
+
+
+def extrair_formato_legado(aba, ano: int) -> list[tuple]:
+    """Mantém suporte às planilhas antigas sem cabeçalhos de mês."""
+    registros = []
+    for mes in range(1, 13):
+        coluna_descricao = 5 + (mes - 1) * 4
+        for linha in range(4, (aba.max_row or 0) + 1):
+            descricao = texto(aba.cell(linha, coluna_descricao).value)
+            valor = para_decimal(aba.cell(linha, coluna_descricao + 1).value)
+            chave = normalizar(descricao)
+            if not descricao or valor is None or valor <= 0 or chave in IGNORAR or chave in MESES:
+                continue
+            registros.append((ano, mes, descricao, valor, tipo_do_rotulo(descricao)))
+    return registros
+
+
 def extrair_lancamentos(arquivo: str | Path):
     """Lê os blocos mensais da planilha e devolve tuplas prontas para importar."""
     # A planilha original não declara a dimensão usada em todas as abas; por
@@ -78,20 +140,12 @@ def extrair_lancamentos(arquivo: str | Path):
     wb = openpyxl.load_workbook(arquivo, data_only=True, read_only=False)
     registros = []
     for ano, aba in abas_anuais(wb):
-        # Na planilha, cada bloco começa em E, I, M... e contém descrição/valor.
-        for mes in range(1, 13):
-            coluna_descricao = 5 + (mes - 1) * 4
-            # Abas vazias no Excel podem não informar ``max_row`` em modo leitura.
-            for linha in range(4, (aba.max_row or 0) + 1):
-                descricao = texto(aba.cell(linha, coluna_descricao).value)
-                valor = para_decimal(aba.cell(linha, coluna_descricao + 1).value)
-                chave = normalizar(descricao)
-                if not descricao or valor is None or valor <= 0 or chave in IGNORAR:
-                    continue
-                if chave in MESES:  # cabeçalhos do segundo semestre
-                    continue
-                tipo = tipo_do_rotulo(descricao)
-                registros.append((ano, mes, descricao, valor, tipo))
+        cabecalhos = cabecalhos_mensais(aba)
+        if cabecalhos:
+            for mes, linha, coluna in cabecalhos:
+                registros.extend(extrair_bloco_mensal(aba, ano, mes, linha, coluna))
+        else:
+            registros.extend(extrair_formato_legado(aba, ano))
     wb.close()
     return registros
 
@@ -105,13 +159,22 @@ def obter_categoria(sessao, nome: str, tipo: str) -> Categoria:
     return categoria
 
 
-def importar(arquivo: str | Path, url: str | None = None) -> int:
+def importar(arquivo: str | Path, url: str | None = None, substituir_ano: int | None = None) -> int:
     engine = criar_engine(url)
     criar_tabelas(engine)
     Sessao = criar_sessao(engine)
     inseridos = 0
     with Sessao.begin() as sessao:
-        for ano, mes, descricao, valor, tipo in extrair_lancamentos(arquivo):
+        registros = extrair_lancamentos(arquivo)
+        if substituir_ano is not None:
+            registros = [registro for registro in registros if registro[0] == substituir_ano]
+        if substituir_ano is not None:
+            sessao.execute(delete(Lancamento).where(
+                Lancamento.origem == "excel",
+                Lancamento.data >= date(substituir_ano, 1, 1),
+                Lancamento.data < date(substituir_ano + 1, 1, 1),
+            ))
+        for ano, mes, descricao, valor, tipo in registros:
             categoria = obter_categoria(sessao, descricao, tipo)
             data_lancamento = date(ano, mes, 1)
             existente = sessao.scalar(select(Lancamento.id).where(
@@ -141,10 +204,11 @@ def importar(arquivo: str | Path, url: str | None = None) -> int:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Importa financas.xlsx para o Supabase.")
     parser.add_argument("--arquivo", default="financas.xlsx", help="Caminho da planilha de origem")
+    parser.add_argument("--substituir-ano", type=int, help="Remove os lançamentos de origem Excel do ano antes de importá-lo novamente")
     args = parser.parse_args()
     if not Path(args.arquivo).exists():
         parser.error(f"Arquivo não encontrado: {args.arquivo}")
-    total = importar(args.arquivo)
+    total = importar(args.arquivo, substituir_ano=args.substituir_ano)
     print(f"Importação concluída: {total} lançamento(s) novos.")
 
 
