@@ -7,9 +7,9 @@ from decimal import Decimal
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
-from database import Categoria, GastoFixo, Lancamento, criar_engine, criar_sessao, criar_tabelas
+from database import Categoria, GastoFixo, GastoPlanejado, Lancamento, criar_engine, criar_sessao, criar_tabelas
 
 st.set_page_config(page_title="SOSO", page_icon="💸", layout="wide", initial_sidebar_state="collapsed")
 
@@ -258,6 +258,119 @@ def carregar_resumo(Sessao) -> pd.DataFrame:
     return dados.groupby(["mes", "tipo"], as_index=False)["valor"].sum()
 
 
+def primeiro_dia_do_mes(valor: pd.Timestamp | date) -> date:
+    timestamp = pd.Timestamp(valor)
+    return date(timestamp.year, timestamp.month, 1)
+
+
+def carregar_planejamento_mensal(Sessao, mes_referencia: pd.Timestamp) -> pd.DataFrame:
+    """Carrega o mês ou cria sua primeira versão a partir do mês anterior."""
+    referencia = primeiro_dia_do_mes(mes_referencia)
+    anterior = (pd.Timestamp(referencia) - pd.DateOffset(months=1)).date().replace(day=1)
+
+    with Sessao.begin() as sessao:
+        planejados = sessao.execute(
+            select(GastoPlanejado, Categoria.nome)
+            .join(Categoria)
+            .where(GastoPlanejado.mes_referencia == referencia)
+            .order_by(GastoPlanejado.descricao)
+        ).all()
+
+        if not planejados:
+            origem = sessao.execute(
+                select(GastoPlanejado, Categoria.nome)
+                .join(Categoria)
+                .where(GastoPlanejado.mes_referencia == anterior)
+                .order_by(GastoPlanejado.descricao)
+            ).all()
+            if origem:
+                planejados = []
+                for gasto, categoria in origem:
+                    novo = GastoPlanejado(
+                        categoria_id=gasto.categoria_id,
+                        descricao=gasto.descricao,
+                        valor_previsto=gasto.valor_previsto,
+                        dia_vencimento=gasto.dia_vencimento,
+                        status=gasto.status,
+                        observacao=gasto.observacao,
+                        mes_referencia=referencia,
+                    )
+                    sessao.add(novo)
+                    planejados.append((novo, categoria))
+            else:
+                # O primeiro mês sem planejamento usa as despesas reais do mês anterior.
+                despesas = sessao.execute(
+                    select(Lancamento, Categoria.nome)
+                    .join(Categoria)
+                    .where(
+                        Lancamento.tipo == "despesa",
+                        Lancamento.data >= anterior,
+                        Lancamento.data < referencia,
+                    )
+                    .order_by(Lancamento.descricao)
+                ).all()
+                planejados = []
+                for lancamento, categoria in despesas:
+                    novo = GastoPlanejado(
+                        categoria_id=lancamento.categoria_id,
+                        descricao=lancamento.descricao,
+                        valor_previsto=lancamento.valor,
+                        dia_vencimento=10,
+                        status="Pendente",
+                        observacao="",
+                        mes_referencia=referencia,
+                    )
+                    sessao.add(novo)
+                    planejados.append((novo, categoria))
+
+        linhas = [
+            {
+                "Conta": gasto.descricao,
+                "Categoria": categoria,
+                "Valor previsto": float(gasto.valor_previsto),
+                "Vencimento": gasto.dia_vencimento or 10,
+                "Status": gasto.status,
+                "Observação": gasto.observacao,
+            }
+            for gasto, categoria in planejados
+        ]
+    return pd.DataFrame(linhas, columns=["Conta", "Categoria", "Valor previsto", "Vencimento", "Status", "Observação"])
+
+
+def salvar_planejamento_mensal(Sessao, mes_referencia: pd.Timestamp, tabela: pd.DataFrame) -> None:
+    referencia = primeiro_dia_do_mes(mes_referencia)
+    linhas = []
+    for registro in tabela.fillna("").to_dict("records"):
+        descricao = str(registro["Conta"]).strip()
+        categoria_nome = str(registro["Categoria"] or descricao).strip() or descricao
+        try:
+            valor = Decimal(str(registro["Valor previsto"])).quantize(Decimal("0.01"))
+            vencimento = int(registro["Vencimento"])
+        except (ArithmeticError, TypeError, ValueError):
+            raise ValueError(f"Revise o valor e o vencimento de '{descricao or 'nova conta'}'.")
+        if not descricao or valor <= 0 or not 1 <= vencimento <= 31:
+            raise ValueError("Cada linha precisa de conta, valor positivo e vencimento entre 1 e 31.")
+        linhas.append((descricao, categoria_nome, valor, vencimento, str(registro["Status"] or "Pendente"), str(registro["Observação"] or "")))
+
+    with Sessao.begin() as sessao:
+        sessao.execute(delete(GastoPlanejado).where(GastoPlanejado.mes_referencia == referencia))
+        for descricao, categoria_nome, valor, vencimento, status, observacao in linhas:
+            categoria = sessao.scalar(select(Categoria).where(Categoria.nome == categoria_nome))
+            if categoria is None:
+                categoria = Categoria(nome=categoria_nome, tipo="despesa")
+                sessao.add(categoria)
+                sessao.flush()
+            sessao.add(GastoPlanejado(
+                categoria_id=categoria.id,
+                descricao=descricao,
+                valor_previsto=valor,
+                dia_vencimento=vencimento,
+                status=status,
+                observacao=observacao,
+                mes_referencia=referencia,
+            ))
+
+
 def dashboard(Sessao) -> None:
     st.markdown('<p class="soso-title">Seu orçamento, sob controle.</p>', unsafe_allow_html=True)
     st.markdown('<p class="soso-subtitle">Acompanhe ganhos, gastos e investimentos mês a mês.</p>', unsafe_allow_html=True)
@@ -359,33 +472,30 @@ def dashboard(Sessao) -> None:
     painel_anual.plotly_chart(fig_anual, use_container_width=True)
 
     painel_fixos = st.container(border=True)
-    painel_fixos.markdown('<div class="panel-title">Planilha de gastos fixos</div>', unsafe_allow_html=True)
-    with Sessao() as sessao:
-        fixos = sessao.execute(select(GastoFixo, Categoria.nome).join(Categoria).order_by(GastoFixo.descricao)).all()
-    tabela = pd.DataFrame(
-        [{
-            "Conta": gasto.descricao,
-            "Categoria": categoria,
-            "Valor previsto": float(gasto.valor_previsto),
-            "Vencimento": gasto.dia_vencimento,
-            "Status": "Pago" if gasto.ativo else "Pendente",
-            "Observação": "",
-        } for gasto, categoria in fixos]
-    )
-    if tabela.empty:
-        tabela = pd.DataFrame(columns=["Conta", "Categoria", "Valor previsto", "Vencimento", "Status", "Observação"])
+    mes_nome = pd.Timestamp(mes).strftime("%m/%Y")
+    painel_fixos.markdown(f'<div class="panel-title">Planilha de gastos — {mes_nome}</div>', unsafe_allow_html=True)
+    painel_fixos.caption("A primeira versão deste mês é copiada do mês anterior. Salve suas alterações para usá-las como base no próximo mês.")
+    tabela = carregar_planejamento_mensal(Sessao, pd.Timestamp(mes))
     editor = painel_fixos.data_editor(
         tabela,
         use_container_width=True,
         num_rows="dynamic",
         hide_index=True,
+        key=f"planejamento_{pd.Timestamp(mes).strftime('%Y_%m')}",
         column_config={
             "Valor previsto": st.column_config.NumberColumn(format="R$ %.2f"),
             "Status": st.column_config.SelectboxColumn(options=["Pago", "Pendente"]),
             "Vencimento": st.column_config.NumberColumn(min_value=1, max_value=31),
         },
-        disabled=["Conta", "Categoria"],
     )
+    if painel_fixos.button("Salvar planilha do mês", type="primary", key=f"salvar_planejamento_{pd.Timestamp(mes).strftime('%Y_%m')}"):
+        try:
+            salvar_planejamento_mensal(Sessao, pd.Timestamp(mes), editor)
+        except ValueError as erro:
+            painel_fixos.error(str(erro))
+        else:
+            painel_fixos.success("Planilha mensal salva.")
+            st.rerun()
 
 
 def novo_lancamento(Sessao) -> None:

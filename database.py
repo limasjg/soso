@@ -37,6 +37,22 @@ class GastoFixo(Base):
     categoria: Mapped[Categoria] = relationship()
 
 
+class GastoPlanejado(Base):
+    """Planejamento de despesas de um mês específico."""
+
+    __tablename__ = "gastos_planejados"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    categoria_id: Mapped[int] = mapped_column(ForeignKey("categorias.id"))
+    descricao: Mapped[str] = mapped_column(String(160))
+    valor_previsto: Mapped[Decimal] = mapped_column(Numeric(12, 2))
+    dia_vencimento: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    status: Mapped[str] = mapped_column(String(20), default="Pendente")
+    observacao: Mapped[str] = mapped_column(String(500), default="")
+    mes_referencia: Mapped[date] = mapped_column(Date, index=True)
+    categoria: Mapped[Categoria] = relationship()
+
+
 class Lancamento(Base):
     __tablename__ = "lancamentos"
 
