@@ -39,7 +39,7 @@ st.markdown("""<style>
         background: rgba(3, 17, 29, 0.88);
         backdrop-filter: blur(18px);
         border-bottom: 1px solid rgba(148, 163, 184, 0.12);
-        margin: 0 -1rem;
+        margin: 0 0rem;
         border-radius: 12px;
         margin-bottom: 1rem;
     }
@@ -88,7 +88,7 @@ st.markdown("""<style>
     }
     [data-testid="stMetric"] {
         background: rgba(15, 23, 42, 0.80);
-        border: 1px solid rgba(148, 163, 184, 0.14);
+        border: 1px solid rgb(32 42 62) !important;
         border-radius: 18px;
         padding: 18px 16px 14px;
         min-height: 140px;
@@ -115,7 +115,7 @@ st.markdown("""<style>
     }
     .kpi-card {
         background: rgba(15, 23, 42, 0.8);
-        border: 1px solid rgba(148, 163, 184, 0.14);
+        border: 1px solid rgb(32 42 62) !important;
         border-radius: 18px;
         padding: 1rem 1.1rem;
         min-height: 110px;
@@ -138,9 +138,11 @@ st.markdown("""<style>
         font-size: 0.8rem;
         color: #34d399;
     }
-    .panel {
+    .panel,
+    [data-testid="stVerticalBlockBorderWrapper"],
+    .st-emotion-cache-1ne20ew {
         background: rgba(15, 23, 42, 0.84);
-        border: 1px solid rgba(148, 163, 184, 0.14);
+        border: 1px solid rgb(32 42 62) !important;
         border-radius: 20px;
         padding: 1rem 1.1rem 0.8rem;
         box-shadow: 0 12px 32px rgba(2, 8, 23, 0.18);
@@ -262,24 +264,35 @@ def dashboard(Sessao) -> None:
 
     resumo = resumo.copy()
     resumo["ano"] = resumo["mes"].dt.year
-    anos = sorted(set(resumo["ano"].dropna().unique().tolist() + [date.today().year]), reverse=True)
+    hoje = date.today()
+    ano_atual = hoje.year
+    mes_atual = pd.Timestamp(hoje).to_period("M").to_timestamp()
+    anos = sorted(set(resumo["ano"].dropna().unique().tolist() + [ano_atual]), reverse=True)
 
-    st.markdown('<div class="selection-wrap">', unsafe_allow_html=True)
+    def selecionar_mes_do_ano() -> None:
+        """Atualiza o mês para uma opção válida ao trocar de ano."""
+        ano_selecionado = st.session_state["ano_selecionado"]
+        st.session_state["mes_selecionado"] = (
+            mes_atual if ano_selecionado == ano_atual else pd.Timestamp(f"{ano_selecionado}-12-01")
+        )
+
     col_ano, col_mes = st.columns(2)
     with col_ano:
-        ano = st.selectbox("Ano", anos, index=0)
+        ano = st.selectbox(
+            "Ano", anos, index=anos.index(ano_atual), key="ano_selecionado", on_change=selecionar_mes_do_ano
+        )
     with col_mes:
         dados_ano = resumo[resumo["ano"] == ano].copy()
         periodo_inicio = pd.Period(f"{ano}-01", freq="M")
-        periodo_fim = pd.Period(date.today(), freq="M") if ano == date.today().year else pd.Period(f"{ano}-12", freq="M")
+        periodo_fim = pd.Period(hoje, freq="M") if ano == ano_atual else pd.Period(f"{ano}-12", freq="M")
         meses = pd.period_range(periodo_inicio, periodo_fim, freq="M").to_timestamp()
         meses = sorted(set(pd.Timestamp(m) for m in meses) | set(dados_ano["mes"].dropna().unique().tolist()))
-        mes = st.selectbox("Mês", meses, format_func=lambda x: pd.Timestamp(x).strftime("%m/%Y"), index=len(meses) - 1)
-    st.markdown('</div>', unsafe_allow_html=True)
-
-    if st.button("Adicionar mês atual") and not any(pd.Timestamp(m).to_period("M") == pd.Timestamp(date.today()).to_period("M") for m in meses):
-        st.session_state["mes_selecionado"] = pd.Timestamp(date.today()).to_period("M").to_timestamp()
-        st.rerun()
+        mes_padrao = mes_atual if ano == ano_atual else pd.Timestamp(f"{ano}-12-01")
+        if st.session_state.get("mes_selecionado") not in meses:
+            st.session_state["mes_selecionado"] = mes_padrao
+        mes = st.selectbox(
+            "Mês", meses, format_func=lambda x: pd.Timestamp(x).strftime("%m/%Y"), key="mes_selecionado"
+        )
 
     dados_mes = dados_ano[dados_ano["mes"] == mes].set_index("tipo")["valor"].to_dict()
     receita = float(dados_mes.get("receita", 0) or 0)
@@ -295,8 +308,8 @@ def dashboard(Sessao) -> None:
 
     left, right = st.columns([1.5, 1.2])
     with left:
-        st.markdown('<div class="panel">', unsafe_allow_html=True)
-        st.markdown('<div class="panel-title">Net worth by month</div>', unsafe_allow_html=True)
+        painel_patrimonio = st.container(border=True)
+        painel_patrimonio.markdown('<div class="panel-title">Total Investido</div>', unsafe_allow_html=True)
         valor_por_mes = dados_ano.pivot_table(index="mes", columns="tipo", values="valor", aggfunc="sum", fill_value=0).sort_index().reset_index()
         if "mes" in valor_por_mes.columns:
             valor_por_mes["mes"] = pd.to_datetime(valor_por_mes["mes"])
@@ -315,12 +328,11 @@ def dashboard(Sessao) -> None:
             yaxis=dict(title="Patrimônio", showgrid=True, gridcolor="rgba(148,163,184,0.12)"),
             font={"color": "#e2e8f0"},
         )
-        st.plotly_chart(fig, use_container_width=True)
-        st.markdown('</div>', unsafe_allow_html=True)
+        painel_patrimonio.plotly_chart(fig, use_container_width=True)
 
     with right:
-        st.markdown('<div class="panel">', unsafe_allow_html=True)
-        st.markdown('<div class="panel-title">Receita, despesas e fluxo</div>', unsafe_allow_html=True)
+        painel_fluxo = st.container(border=True)
+        painel_fluxo.markdown('<div class="panel-title">Receita, despesas e fluxo</div>', unsafe_allow_html=True)
         mensal = dados_ano.pivot_table(index="mes", columns="tipo", values="valor", aggfunc="sum", fill_value=0).sort_index().reset_index()
         if "mes" in mensal.columns:
             mensal["mes"] = pd.to_datetime(mensal["mes"])
@@ -340,11 +352,10 @@ def dashboard(Sessao) -> None:
             yaxis=dict(title="Valor (R$)", showgrid=True, gridcolor="rgba(148,163,184,0.12)"),
             font={"color": "#e2e8f0"},
         )
-        st.plotly_chart(fig2, use_container_width=True)
-        st.markdown('</div>', unsafe_allow_html=True)
+        painel_fluxo.plotly_chart(fig2, use_container_width=True)
 
-    st.markdown('<div class="panel" style="margin-top: 1.2rem;">', unsafe_allow_html=True)
-    st.markdown('<div class="panel-title">Planilha de gastos fixos</div>', unsafe_allow_html=True)
+    painel_fixos = st.container(border=True)
+    painel_fixos.markdown('<div class="panel-title">Planilha de gastos fixos</div>', unsafe_allow_html=True)
     with Sessao() as sessao:
         fixos = sessao.execute(select(GastoFixo, Categoria.nome).join(Categoria).order_by(GastoFixo.descricao)).all()
     tabela = pd.DataFrame(
@@ -359,7 +370,7 @@ def dashboard(Sessao) -> None:
     )
     if tabela.empty:
         tabela = pd.DataFrame(columns=["Conta", "Categoria", "Valor previsto", "Vencimento", "Status", "Observação"])
-    editor = st.data_editor(
+    editor = painel_fixos.data_editor(
         tabela,
         use_container_width=True,
         num_rows="dynamic",
@@ -371,7 +382,6 @@ def dashboard(Sessao) -> None:
         },
         disabled=["Conta", "Categoria"],
     )
-    st.markdown('</div>', unsafe_allow_html=True)
 
 
 def novo_lancamento(Sessao) -> None:
