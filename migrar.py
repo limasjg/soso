@@ -20,6 +20,7 @@ from database import Categoria, GastoFixo, Lancamento, criar_engine, criar_sessa
 MESES = {nome: numero for numero, nome in enumerate(
     ("janeiro", "fevereiro", "março", "abril", "maio", "junho", "julho", "agosto", "setembro", "outubro", "novembro", "dezembro"), 1
 )}
+MESES["outurbro"] = 10  # grafia presente na aba de 2022
 IGNORAR = {"pessoal", "contas", "total", "valor", "mês", "ganho total", "valor total"}
 ROTULOS_RECEITA = {"ganho", "receita", "salário", "salario"}
 ROTULOS_INVESTIMENTO = {"investido", "investimento", "investimentos"}
