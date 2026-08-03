@@ -423,6 +423,68 @@ def salvar_planejamento_mensal(Sessao, mes_referencia: pd.Timestamp, tabela: pd.
             ))
 
 
+def detalhamento_mes(Sessao) -> None:
+    ano = st.session_state.get("ano_selecionado", date.today().year)
+    mes_selecionado = pd.Timestamp(st.session_state.get("mes_selecionado", date.today())).to_period("M").to_timestamp()
+    if mes_selecionado.year != ano:
+        mes_selecionado = pd.Timestamp(f"{ano}-{mes_selecionado.month:02d}-01")
+    proximo_mes = mes_selecionado + pd.DateOffset(months=1)
+
+    st.markdown('<div class="soso-title" style="font-size: 2rem;">Detalhamento do mês</div>', unsafe_allow_html=True)
+    st.markdown(
+        f'<p class="soso-subtitle">Lançamentos de {mes_selecionado.strftime("%m/%Y")}. Altere o período no Dashboard para consultar outro mês.</p>',
+        unsafe_allow_html=True,
+    )
+    with Sessao() as sessao:
+        registros = sessao.execute(
+            select(Lancamento, Categoria.nome)
+            .join(Categoria)
+            .where(Lancamento.data >= mes_selecionado.date(), Lancamento.data < proximo_mes.date())
+            .order_by(Lancamento.tipo, Lancamento.descricao)
+        ).all()
+
+    dados = pd.DataFrame(
+        [
+            {
+                "Tipo": lancamento.tipo,
+                "Descrição": lancamento.descricao,
+                "Categoria": categoria,
+                "Valor": float(lancamento.valor),
+                "Data": lancamento.data,
+                "Origem": lancamento.origem,
+            }
+            for lancamento, categoria in registros
+        ]
+    )
+    totais = dados.groupby("Tipo")["Valor"].sum().to_dict() if not dados.empty else {}
+    col_receita, col_despesa, col_investimento = st.columns(3)
+    col_receita.metric("Receitas", moeda(totais.get("receita", 0)))
+    col_despesa.metric("Despesas", moeda(totais.get("despesa", 0)))
+    col_investimento.metric("Investimentos", moeda(totais.get("investimento", 0)))
+
+    if dados.empty:
+        st.info("Não há lançamentos neste mês.")
+        return
+
+    nomes = {"receita": "Receitas", "despesa": "Despesas", "investimento": "Investimentos"}
+    abas = st.tabs(list(nomes.values()))
+    for aba, (tipo, titulo) in zip(abas, nomes.items()):
+        with aba:
+            tabela = dados[dados["Tipo"] == tipo].drop(columns="Tipo")
+            if tabela.empty:
+                st.caption(f"Nenhum lançamento de {titulo.lower()}.")
+            else:
+                st.dataframe(
+                    tabela,
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        "Valor": st.column_config.NumberColumn(format="R$ %.2f"),
+                        "Data": st.column_config.DateColumn(format="DD/MM/YYYY"),
+                    },
+                )
+
+
 def dashboard(Sessao) -> None:
     st.markdown('<p class="soso-title">Seu orçamento, sob controle.</p>', unsafe_allow_html=True)
     st.markdown('<p class="soso-subtitle">Acompanhe ganhos, gastos e investimentos mês a mês.</p>', unsafe_allow_html=True)
@@ -593,10 +655,12 @@ def main() -> None:
         st.code("cp .env.example .env\n# edite DATABASE_URL\nstreamlit run app.py")
         st.stop()
 
-    tab_dashboard, tab_lancamento = st.tabs(["Dashboard", "Novo lançamento"])
+    tab_dashboard, tab_detalhamento, tab_lancamento = st.tabs(["Dashboard", "Detalhamento do mês", "Novo lançamento"])
 
     with tab_dashboard:
         dashboard(Sessao)
+    with tab_detalhamento:
+        detalhamento_mes(Sessao)
     with tab_lancamento:
         novo_lancamento(Sessao)
 
