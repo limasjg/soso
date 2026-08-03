@@ -438,6 +438,102 @@ def salvar_planejamento_mensal(Sessao, mes_referencia: pd.Timestamp, tabela: pd.
             ))
 
 
+def carregar_lancamentos_mensais(Sessao, mes_referencia: pd.Timestamp, tipo: str) -> pd.DataFrame:
+    referencia = primeiro_dia_do_mes(mes_referencia)
+    proximo_mes = (pd.Timestamp(referencia) + pd.DateOffset(months=1)).date()
+    with Sessao() as sessao:
+        registros = sessao.execute(
+            select(Lancamento, Categoria.nome)
+            .join(Categoria)
+            .where(
+                Lancamento.tipo == tipo,
+                Lancamento.data >= referencia,
+                Lancamento.data < proximo_mes,
+            )
+            .order_by(Lancamento.descricao)
+        ).all()
+    return pd.DataFrame(
+        [
+            {
+                "Descrição": lancamento.descricao,
+                "Categoria": categoria,
+                "Valor": float(lancamento.valor),
+                "Data": lancamento.data,
+            }
+            for lancamento, categoria in registros
+        ],
+        columns=["Descrição", "Categoria", "Valor", "Data"],
+    )
+
+
+def salvar_lancamentos_mensais(Sessao, mes_referencia: pd.Timestamp, tipo: str, tabela: pd.DataFrame) -> None:
+    referencia = primeiro_dia_do_mes(mes_referencia)
+    proximo_mes = (pd.Timestamp(referencia) + pd.DateOffset(months=1)).date()
+    linhas = []
+    for registro in tabela.fillna("").to_dict("records"):
+        descricao = str(registro["Descrição"]).strip()
+        categoria_nome = str(registro["Categoria"] or descricao).strip() or descricao
+        try:
+            valor = Decimal(str(registro["Valor"])).quantize(Decimal("0.01"))
+            data_lancamento = pd.Timestamp(registro["Data"]).date()
+        except (ArithmeticError, TypeError, ValueError):
+            raise ValueError(f"Revise os dados de '{descricao or 'novo lançamento'}'.")
+        if not descricao or valor <= 0 or not referencia <= data_lancamento < proximo_mes:
+            raise ValueError("Informe descrição, valor positivo e uma data dentro do mês selecionado.")
+        linhas.append((descricao, categoria_nome, valor, data_lancamento))
+
+    with Sessao.begin() as sessao:
+        sessao.execute(delete(Lancamento).where(
+            Lancamento.tipo == tipo,
+            Lancamento.data >= referencia,
+            Lancamento.data < proximo_mes,
+        ))
+        for descricao, categoria_nome, valor, data_lancamento in linhas:
+            categoria = sessao.scalar(select(Categoria).where(Categoria.nome == categoria_nome))
+            if categoria is None:
+                categoria = Categoria(nome=categoria_nome, tipo=tipo)
+                sessao.add(categoria)
+                sessao.flush()
+            sessao.add(Lancamento(
+                categoria_id=categoria.id,
+                tipo=tipo,
+                descricao=descricao,
+                valor=valor,
+                data=data_lancamento,
+                origem="planilha mensal",
+            ))
+
+
+def assinatura_tabela(tabela: pd.DataFrame) -> str:
+    return tabela.fillna("").to_json(orient="split", date_format="iso")
+
+
+def editor_com_salvamento_automatico(container, tabela: pd.DataFrame, chave: str, salvar, configuracao: dict) -> None:
+    """Persiste as edições do data editor no rerun provocado por cada alteração."""
+    editor = container.data_editor(
+        tabela,
+        use_container_width=True,
+        num_rows="dynamic",
+        hide_index=True,
+        key=chave,
+        column_config=configuracao,
+    )
+    assinatura = assinatura_tabela(editor)
+    chave_salva = f"{chave}_assinatura_salva"
+    if chave_salva not in st.session_state:
+        st.session_state[chave_salva] = assinatura
+        return
+    if st.session_state[chave_salva] == assinatura:
+        return
+    try:
+        salvar(editor)
+    except ValueError as erro:
+        container.warning(str(erro))
+    else:
+        st.session_state[chave_salva] = assinatura
+        st.rerun()
+
+
 def detalhamento_mes(Sessao) -> None:
     ano = st.session_state.get("ano_selecionado", date.today().year)
     mes_selecionado = pd.Timestamp(st.session_state.get("mes_selecionado", date.today())).to_period("M").to_timestamp()
@@ -508,8 +604,8 @@ def detalhamento_mes(Sessao) -> None:
 
 
 def dashboard(Sessao) -> None:
-    st.markdown('<p class="soso-title">Seu orçamento, sob controle.</p>', unsafe_allow_html=True)
-    st.markdown('<p class="soso-subtitle">Acompanhe ganhos, gastos e investimentos mês a mês.</p>', unsafe_allow_html=True)
+    st.markdown('<p class="soso-title">Sistema Operacional para Salvar seu Orçamento.</p>', unsafe_allow_html=True)
+    st.markdown('<p class="soso-subtitle">Você não é o governo pra gastar mais do que ganha, então não seja estúpido.</p>', unsafe_allow_html=True)
 
     resumo = carregar_resumo(Sessao)
     if resumo.empty:
@@ -607,31 +703,53 @@ def dashboard(Sessao) -> None:
     )
     painel_anual.plotly_chart(fig_anual, use_container_width=True)
 
-    painel_fixos = st.container(border=True)
+    mes_timestamp = pd.Timestamp(mes)
+    chave_mes = mes_timestamp.strftime("%Y_%m")
     mes_nome = pd.Timestamp(mes).strftime("%m/%Y")
-    painel_fixos.markdown(f'<div class="panel-title">Planilha de gastos — {mes_nome}</div>', unsafe_allow_html=True)
-    painel_fixos.caption("A primeira versão deste mês é copiada do mês anterior. Salve suas alterações para usá-las como base no próximo mês.")
-    tabela = carregar_planejamento_mensal(Sessao, pd.Timestamp(mes))
-    editor = painel_fixos.data_editor(
-        tabela,
-        use_container_width=True,
-        num_rows="dynamic",
-        hide_index=True,
-        key=f"planejamento_{pd.Timestamp(mes).strftime('%Y_%m')}",
-        column_config={
-            "Valor previsto": st.column_config.NumberColumn(format="R$ %.2f"),
+    configuracao_lancamentos = {
+        "Valor": st.column_config.NumberColumn(format="R$ %.2f", min_value=0.01),
+        "Data": st.column_config.DateColumn(format="DD/MM/YYYY"),
+    }
+
+    painel_despesas = st.container(border=True)
+    painel_despesas.markdown(f'<div class="panel-title">Planilha de despesas — {mes_nome}</div>', unsafe_allow_html=True)
+    painel_despesas.caption("A primeira versão é copiada do mês anterior. Alterações são salvas automaticamente.")
+    despesas = carregar_planejamento_mensal(Sessao, mes_timestamp)
+    editor_com_salvamento_automatico(
+        painel_despesas,
+        despesas,
+        f"planejamento_{chave_mes}",
+        lambda tabela: salvar_planejamento_mensal(Sessao, mes_timestamp, tabela),
+        {
+            "Valor previsto": st.column_config.NumberColumn(format="R$ %.2f", min_value=0.01),
             "Status": st.column_config.SelectboxColumn(options=["Pago", "Pendente"]),
             "Vencimento": st.column_config.NumberColumn(min_value=1, max_value=31),
         },
     )
-    if painel_fixos.button("Salvar planilha do mês", type="primary", key=f"salvar_planejamento_{pd.Timestamp(mes).strftime('%Y_%m')}"):
-        try:
-            salvar_planejamento_mensal(Sessao, pd.Timestamp(mes), editor)
-        except ValueError as erro:
-            painel_fixos.error(str(erro))
-        else:
-            painel_fixos.success("Planilha mensal salva.")
-            st.rerun()
+
+    painel_receitas = st.container(border=True)
+    painel_receitas.markdown(f'<div class="panel-title">Planilha de receitas — {mes_nome}</div>', unsafe_allow_html=True)
+    painel_receitas.caption("Adicione, altere ou remova receitas. As alterações são salvas automaticamente.")
+    receitas = carregar_lancamentos_mensais(Sessao, mes_timestamp, "receita")
+    editor_com_salvamento_automatico(
+        painel_receitas,
+        receitas,
+        f"receitas_{chave_mes}",
+        lambda tabela: salvar_lancamentos_mensais(Sessao, mes_timestamp, "receita", tabela),
+        configuracao_lancamentos,
+    )
+
+    painel_investimentos = st.container(border=True)
+    painel_investimentos.markdown(f'<div class="panel-title">Planilha de investimentos — {mes_nome}</div>', unsafe_allow_html=True)
+    painel_investimentos.caption("Adicione, altere ou remova investimentos. As alterações são salvas automaticamente.")
+    investimentos = carregar_lancamentos_mensais(Sessao, mes_timestamp, "investimento")
+    editor_com_salvamento_automatico(
+        painel_investimentos,
+        investimentos,
+        f"investimentos_{chave_mes}",
+        lambda tabela: salvar_lancamentos_mensais(Sessao, mes_timestamp, "investimento", tabela),
+        configuracao_lancamentos,
+    )
 
 
 def novo_lancamento(Sessao) -> None:
@@ -678,14 +796,7 @@ def main() -> None:
         st.code("cp .env.example .env\n# edite DATABASE_URL\nstreamlit run app.py")
         st.stop()
 
-    tab_dashboard, tab_detalhamento, tab_lancamento = st.tabs(["Dashboard", "Detalhamento do mês", "Novo lançamento"])
-
-    with tab_dashboard:
-        dashboard(Sessao)
-    with tab_detalhamento:
-        detalhamento_mes(Sessao)
-    with tab_lancamento:
-        novo_lancamento(Sessao)
+    dashboard(Sessao)
 
 
 if __name__ == "__main__":
