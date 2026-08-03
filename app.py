@@ -7,7 +7,7 @@ from decimal import Decimal
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 
 from database import Categoria, GastoPlanejado, Lancamento, criar_engine, criar_sessao, criar_tabelas
 
@@ -303,10 +303,25 @@ def moeda(valor: Decimal | float | int) -> str:
 def carregar_resumo(Sessao) -> pd.DataFrame:
     with Sessao() as sessao:
         linhas = sessao.execute(select(Lancamento.data, Lancamento.tipo, Lancamento.valor)).all()
+        planejamentos = sessao.execute(
+            select(GastoPlanejado.mes_referencia, func.sum(GastoPlanejado.valor_previsto))
+            .group_by(GastoPlanejado.mes_referencia)
+        ).all()
     dados = pd.DataFrame(linhas, columns=["data", "tipo", "valor"])
     if dados.empty:
-        return pd.DataFrame(columns=["mes", "tipo", "valor"])
-    dados["mes"] = pd.to_datetime(dados["data"]).dt.to_period("M").dt.to_timestamp()
+        dados = pd.DataFrame(columns=["mes", "tipo", "valor"])
+    else:
+        dados["mes"] = pd.to_datetime(dados["data"]).dt.to_period("M").dt.to_timestamp()
+        dados = dados.groupby(["mes", "tipo"], as_index=False)["valor"].sum()
+
+    # Quando existe uma planilha mensal salva, ela representa a previsão de
+    # despesas daquele mês e substitui os lançamentos históricos no Dashboard.
+    if planejamentos:
+        previstos = pd.DataFrame(planejamentos, columns=["mes", "valor"])
+        previstos["mes"] = pd.to_datetime(previstos["mes"])
+        previstos["tipo"] = "despesa"
+        dados = dados[~((dados["tipo"] == "despesa") & dados["mes"].isin(previstos["mes"]))]
+        dados = pd.concat([dados, previstos[["mes", "tipo", "valor"]]], ignore_index=True)
     return dados.groupby(["mes", "tipo"], as_index=False)["valor"].sum()
 
 
@@ -645,6 +660,7 @@ def novo_lancamento(Sessao) -> None:
             sessao.add(Lancamento(categoria_id=categoria.id, tipo=tipo, descricao=descricao.strip(),
                                   valor=Decimal(str(valor)), data=data, origem="manual"))
         st.success("Lançamento salvo.")
+        st.rerun()
 
 
 def main() -> None:
