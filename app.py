@@ -9,7 +9,7 @@ import plotly.graph_objects as go
 import streamlit as st
 from sqlalchemy import delete, select
 
-from database import Categoria, GastoFixo, GastoPlanejado, Lancamento, criar_engine, criar_sessao, criar_tabelas
+from database import Categoria, GastoPlanejado, Lancamento, criar_engine, criar_sessao, criar_tabelas
 
 st.set_page_config(page_title="SOSO", page_icon="💸", layout="wide", initial_sidebar_state="collapsed")
 
@@ -206,6 +206,58 @@ st.markdown("""<style>
     .stSelectbox label, .stDateInput label, .stTextInput label, .stNumberInput label, .stCheckbox label {
         color: #e2e8f0 !important;
     }
+    h1, h2, h3, [data-testid="stHeading"] {
+        color: #f8fafc !important;
+    }
+    [data-testid="stCaptionContainer"],
+    [data-testid="stCaptionContainer"] p,
+    [data-testid="stWidgetLabel"],
+    [data-testid="stWidgetLabel"] p,
+    .stForm label {
+        color: #e2e8f0 !important;
+        opacity: 1 !important;
+    }
+    [data-testid="stForm"] input,
+    [data-testid="stForm"] textarea,
+    [data-testid="stForm"] [data-baseweb="select"] input {
+        color: #0f172a !important;
+        background: #f8fafc !important;
+    }
+    [data-testid="stSegmentedControl"] button[aria-pressed="true"],
+    [data-testid="stSegmentedControl"] button[aria-selected="true"],
+    [data-testid="stSegmentedControl"] [role="radio"][aria-checked="true"],
+    [data-testid="stSegmentedControl"] [aria-checked="true"],
+    [data-testid="stSegmentedControl"] [data-checked="true"] {
+        background: #00b547 !important;
+        border-color: #00b547 !important;
+        color: #ffffff !important;
+    }
+    button[data-variant="segmented_control"][data-selected="true"]:not([data-disabled]) {
+        background-color: rgba(0, 181, 71, 0.18) !important;
+        border-color: #00b547 !important;
+        color: #00b547 !important;
+    }
+    [data-testid="stSegmentedControl"] button[aria-pressed="true"] *,
+    [data-testid="stSegmentedControl"] button[aria-selected="true"] *,
+    [data-testid="stSegmentedControl"] [aria-checked="true"] *,
+    [data-testid="stSegmentedControl"] [data-checked="true"] * {
+        color: #ffffff !important;
+    }
+    button[data-variant="segmented_control"][data-selected="true"]:not([data-disabled]) * {
+        color: #00b547 !important;
+    }
+    [data-testid="stFormSubmitButton"] button,
+    [data-testid="stButton"] button[kind="primary"] {
+        background: #00b547 !important;
+        border-color: #00b547 !important;
+        color: #ffffff !important;
+        font-weight: 700 !important;
+    }
+    [data-testid="stFormSubmitButton"] button:hover,
+    [data-testid="stButton"] button[kind="primary"]:hover {
+        background: #008f38 !important;
+        border-color: #008f38 !important;
+    }
     .stTabs [role="tablist"] {
         gap: 0.5rem;
         margin-bottom: 1rem;
@@ -218,8 +270,8 @@ st.markdown("""<style>
         color: #cbd5e1;
     }
     .stTabs [role="tab"][aria-selected="true"] {
-        background: rgba(15, 23, 42, 0.9);
-        border-color: rgba(96, 165, 250, 0.55);
+        background: rgba(0, 181, 71, 0.14);
+        border-color: #00b547;
         color: #f8fafc;
     }
     @media (max-width: 640px) {
@@ -499,16 +551,20 @@ def dashboard(Sessao) -> None:
 
 
 def novo_lancamento(Sessao) -> None:
-    st.header("Novo lançamento")
-    st.caption("Registre uma movimentação em poucos segundos.")
+    st.markdown('<div class="soso-title" style="font-size: 2rem;">Novo lançamento</div>', unsafe_allow_html=True)
+    st.markdown('<p class="soso-subtitle">Registre uma receita, despesa ou investimento em poucos segundos.</p>', unsafe_allow_html=True)
     with Sessao() as sessao:
         categorias = sessao.scalars(select(Categoria).order_by(Categoria.nome)).all()
     tipos = {"Receita": "receita", "Despesa": "despesa", "Investimento": "investimento"}
-    with st.form("novo_lancamento", clear_on_submit=True):
-        tipo_exibido = st.segmented_control("Tipo", list(tipos), default="Despesa")
+    painel_lancamento = st.container(border=True)
+    with painel_lancamento.form("novo_lancamento", clear_on_submit=True):
+        tipo_exibido = st.segmented_control("Tipo do lançamento", list(tipos), default="Despesa", width="stretch")
         descricao = st.text_input("Descrição", placeholder="Ex.: Mercado")
-        valor = st.number_input("Valor", min_value=0.01, step=1.0, format="%.2f")
-        data = st.date_input("Data", value=date.today())
+        coluna_valor, coluna_data = st.columns(2)
+        with coluna_valor:
+            valor = st.number_input("Valor", min_value=0.01, step=1.0, format="%.2f")
+        with coluna_data:
+            data = st.date_input("Data", value=date.today())
         opcoes = [c.nome for c in categorias if c.tipo == tipos[tipo_exibido]]
         categoria_nome = st.selectbox("Categoria", ["Criar a partir da descrição"] + opcoes)
         enviar = st.form_submit_button("Salvar lançamento", type="primary", use_container_width=True)
@@ -529,39 +585,6 @@ def novo_lancamento(Sessao) -> None:
         st.success("Lançamento salvo.")
 
 
-def gastos_fixos(Sessao) -> None:
-    st.header("Gastos fixos")
-    with Sessao() as sessao:
-        fixos = sessao.execute(select(GastoFixo, Categoria.nome).join(Categoria).order_by(GastoFixo.descricao)).all()
-    if fixos:
-        tabela = pd.DataFrame([{"Descrição": f.descricao, "Categoria": categoria, "Valor previsto": float(f.valor_previsto),
-                                "Vencimento": f.dia_vencimento, "Ativo": f.ativo} for f, categoria in fixos])
-        st.dataframe(tabela, use_container_width=True, hide_index=True,
-                     column_config={"Valor previsto": st.column_config.NumberColumn(format="R$ %.2f")})
-    else:
-        st.info("Nenhum gasto fixo cadastrado.")
-    with st.expander("Adicionar gasto fixo"):
-        with st.form("novo_fixo", clear_on_submit=True):
-            descricao = st.text_input("Conta")
-            valor = st.number_input("Valor previsto", min_value=0.01, step=1.0, format="%.2f")
-            vencimento = st.number_input("Dia de vencimento", min_value=1, max_value=31, value=10)
-            salvar = st.form_submit_button("Adicionar", type="primary")
-        if salvar:
-            if not descricao.strip():
-                st.error("Informe a conta.")
-            else:
-                with Sessao.begin() as sessao:
-                    categoria = sessao.scalar(select(Categoria).where(Categoria.nome == descricao.strip()))
-                    if categoria is None:
-                        categoria = Categoria(nome=descricao.strip(), tipo="despesa")
-                        sessao.add(categoria)
-                        sessao.flush()
-                    sessao.add(GastoFixo(categoria_id=categoria.id, descricao=descricao.strip(),
-                                         valor_previsto=Decimal(str(valor)), dia_vencimento=int(vencimento)))
-                st.success("Gasto fixo adicionado.")
-                st.rerun()
-
-
 def main() -> None:
     try:
         Sessao = sessao_factory()
@@ -570,14 +593,12 @@ def main() -> None:
         st.code("cp .env.example .env\n# edite DATABASE_URL\nstreamlit run app.py")
         st.stop()
 
-    tab_dashboard, tab_lancamento, tab_fixos = st.tabs(["Dashboard", "Novo lançamento", "Gastos fixos"])
+    tab_dashboard, tab_lancamento = st.tabs(["Dashboard", "Novo lançamento"])
 
     with tab_dashboard:
         dashboard(Sessao)
     with tab_lancamento:
         novo_lancamento(Sessao)
-    with tab_fixos:
-        gastos_fixos(Sessao)
 
 
 if __name__ == "__main__":
