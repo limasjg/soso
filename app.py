@@ -458,6 +458,7 @@ def detalhamento_mes(Sessao) -> None:
             .order_by(Lancamento.tipo, Lancamento.descricao)
         ).all()
 
+    planejamento = carregar_planejamento_mensal(Sessao, mes_selecionado)
     dados = pd.DataFrame(
         [
             {
@@ -469,15 +470,21 @@ def detalhamento_mes(Sessao) -> None:
                 "Origem": lancamento.origem,
             }
             for lancamento, categoria in registros
-        ]
+        ],
+        columns=["Tipo", "Descrição", "Categoria", "Valor", "Data", "Origem"],
     )
+    despesas_planejadas = planejamento.rename(columns={"Conta": "Descrição", "Valor previsto": "Valor"})
+    despesas_planejadas["Data"] = mes_selecionado.date()
+    despesas_planejadas["Origem"] = "planejamento mensal"
+    despesas_planejadas = despesas_planejadas[["Descrição", "Categoria", "Valor", "Data", "Origem", "Vencimento", "Status", "Observação"]]
+
     totais = dados.groupby("Tipo")["Valor"].sum().to_dict() if not dados.empty else {}
     col_receita, col_despesa, col_investimento = st.columns(3)
     col_receita.metric("Receitas", moeda(totais.get("receita", 0)))
-    col_despesa.metric("Despesas", moeda(totais.get("despesa", 0)))
+    col_despesa.metric("Despesas", moeda(despesas_planejadas["Valor"].sum()))
     col_investimento.metric("Investimentos", moeda(totais.get("investimento", 0)))
 
-    if dados.empty:
+    if dados.empty and despesas_planejadas.empty:
         st.info("Não há lançamentos neste mês.")
         return
 
@@ -485,7 +492,7 @@ def detalhamento_mes(Sessao) -> None:
     abas = st.tabs(list(nomes.values()))
     for aba, (tipo, titulo) in zip(abas, nomes.items()):
         with aba:
-            tabela = dados[dados["Tipo"] == tipo].drop(columns="Tipo")
+            tabela = despesas_planejadas if tipo == "despesa" else dados[dados["Tipo"] == tipo].drop(columns="Tipo")
             if tabela.empty:
                 st.caption(f"Nenhum lançamento de {titulo.lower()}.")
             else:
