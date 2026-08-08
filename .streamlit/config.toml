@@ -1,0 +1,11 @@
+[theme]
+base = "dark"
+primaryColor = "#008F38"
+backgroundColor = "#03111D"
+secondaryBackgroundColor = "#0F172A"
+textColor = "#F8FAFC"
+borderColor = "#273449"
+dataframeBorderColor = "#334155"
+dataframeHeaderBackgroundColor = "#172033"
+showWidgetBorder = true
+baseRadius = "medium"
