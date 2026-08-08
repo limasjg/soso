@@ -89,6 +89,20 @@ streamlit run app.py
 
 O Streamlit exibirá o endereço local — normalmente `http://localhost:8501` — para abrir no navegador. Em um celular conectado à mesma rede, use o endereço de rede exibido pelo Streamlit.
 
+## Login com Google e deploy no Streamlit Community Cloud
+
+O SOSO bloqueia o acesso até que o visitante entre com Google e o e-mail seja
+igual ao configurado em `access.allowed_email`. A aplicação falha fechada: sem
+essa configuração, o orçamento não é exibido.
+
+1. No Google Cloud Console, crie um cliente OAuth 2.0 do tipo **Web application**.
+2. Adicione a URL de redirecionamento do Streamlit: `https://SEU-SUBDOMINIO.streamlit.app/oauth2callback`.
+3. Copie `.streamlit/secrets.example.toml` para `.streamlit/secrets.toml` localmente e preencha `DATABASE_URL`, o e-mail autorizado, `cookie_secret`, `client_id` e `client_secret`.
+4. No Streamlit Community Cloud, conecte sua conta GitHub, escolha o repositório e o arquivo `app.py`.
+5. Em **Advanced settings → Secrets**, cole o conteúdo preenchido de `secrets.toml`. Nunca envie esse arquivo ao GitHub.
+
+O arquivo `.streamlit/secrets.toml` já é ignorado pelo Git. O deploy atualiza automaticamente a cada envio de código ao repositório.
+
 Na primeira inicialização, a aplicação cria automaticamente estas tabelas:
 
 | Tabela | Finalidade |

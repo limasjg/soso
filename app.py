@@ -1,6 +1,7 @@
 """SOSO — Sistema Operacional que Salva o Orçamento."""
 from __future__ import annotations
 
+import os
 from datetime import date
 from decimal import Decimal
 
@@ -287,6 +288,34 @@ st.markdown('''
     <div class="status"></div>
 </div>
 ''', unsafe_allow_html=True)
+
+
+def email_autorizado() -> str:
+    """Lê o único e-mail permitido sem expor credenciais no código."""
+    try:
+        return str(st.secrets["access"]["allowed_email"]).strip().lower()
+    except Exception:
+        return os.getenv("ALLOWED_EMAIL", "").strip().lower()
+
+
+def exigir_autenticacao() -> None:
+    """Bloqueia toda a aplicação até o login Google do usuário autorizado."""
+    permitido = email_autorizado()
+    if not permitido:
+        st.error("A autenticação ainda não foi configurada. Defina access.allowed_email nos secrets.")
+        st.stop()
+
+    if not st.user.is_logged_in:
+        st.markdown('<div class="soso-title">SOSO</div>', unsafe_allow_html=True)
+        st.markdown('<p class="soso-subtitle">Entre com sua conta Google para acessar seu orçamento.</p>', unsafe_allow_html=True)
+        st.button("Entrar com Google", type="primary", on_click=st.login, use_container_width=True)
+        st.stop()
+
+    email = str(st.user.get("email", "")).strip().lower()
+    if email != permitido:
+        st.error("Esta conta Google não tem autorização para acessar o SOSO.")
+        st.button("Sair", on_click=st.logout)
+        st.stop()
 
 
 @st.cache_resource
@@ -789,6 +818,7 @@ def novo_lancamento(Sessao) -> None:
 
 
 def main() -> None:
+    exigir_autenticacao()
     try:
         Sessao = sessao_factory()
     except RuntimeError as erro:
