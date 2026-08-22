@@ -8,9 +8,11 @@ from decimal import Decimal
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
+import streamlit.runtime as st_runtime
 from sqlalchemy import delete, func, select
 
 from database import Categoria, GastoPlanejado, Lancamento, criar_engine, criar_sessao, criar_tabelas
+from projecoes import calcular_projecao_anual
 
 st.set_page_config(page_title="SOSO", page_icon="💸", layout="wide", initial_sidebar_state="collapsed")
 
@@ -707,6 +709,21 @@ def dashboard(Sessao) -> None:
         media = float(mensal[tipo].mean())
         coluna.metric(titulo, moeda(total), delta=f"Média mensal: {moeda(media)}", delta_color="off")
 
+    if ano == ano_atual:
+        projecao = calcular_projecao_anual(mensal)
+        painel_anual.caption(
+            f"Previsão até dezembro de {ano}, baseada na média de janeiro a {mes_atual.strftime('%m/%Y')}."
+        )
+        for coluna, (tipo, titulo) in zip(
+            painel_anual.columns(3),
+            [
+                ("receita", "Receita prevista"),
+                ("despesa", "Despesas previstas"),
+                ("investimento", "Total investido previsto"),
+            ],
+        ):
+            coluna.metric(titulo, moeda(projecao[tipo]))
+
     fig_anual = go.Figure()
     for tipo, nome, cor in [
         ("receita", "Receita", "#22c55e"),
@@ -818,6 +835,10 @@ def novo_lancamento(Sessao) -> None:
 
 
 def main() -> None:
+    if not st_runtime.exists():
+        print("Este projeto é uma aplicação Streamlit. Execute: python -m streamlit run app.py")
+        return
+
     exigir_autenticacao()
     try:
         Sessao = sessao_factory()

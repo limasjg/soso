@@ -6,6 +6,7 @@ Aplicação pessoal de controle financeiro para registrar receitas, despesas e i
 
 - Dashboard mensal com total ganho, total gasto, total investido e saldo.
 - Gráfico comparativo da evolução mensal de receitas, despesas e investimentos.
+- Previsão anual de receitas, despesas e investimentos com base na média dos meses já transcorridos.
 - Cadastro rápido de lançamentos manuais.
 - Cadastro e consulta de gastos fixos, como aluguel, condomínio, IPTU, luz e internet.
 - Importação idempotente do histórico da planilha `financas.xlsx`: uma segunda execução não duplica lançamentos já importados.
@@ -84,7 +85,7 @@ Para importar outro arquivo, informe seu caminho no parâmetro `--arquivo`.
 ## Executar a aplicação
 
 ```powershell
-streamlit run app.py
+python -m streamlit run app.py
 ```
 
 O Streamlit exibirá o endereço local — normalmente `http://localhost:8501` — para abrir no navegador. Em um celular conectado à mesma rede, use o endereço de rede exibido pelo Streamlit.
