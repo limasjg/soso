@@ -535,33 +535,36 @@ def salvar_lancamentos_mensais(Sessao, mes_referencia: pd.Timestamp, tipo: str, 
             ))
 
 
-def assinatura_tabela(tabela: pd.DataFrame) -> str:
-    return tabela.fillna("").to_json(orient="split", date_format="iso")
+def editor_com_salvamento_manual(container, tabela: pd.DataFrame, chave: str, salvar, configuracao: dict) -> None:
+    """Envia as edições em lote e persiste somente ao clicar em Salvar."""
+    chave_versao = f"{chave}_versao"
+    chave_sucesso = f"{chave}_salvo"
+    versao = st.session_state.get(chave_versao, 0)
+    if st.session_state.pop(chave_sucesso, False):
+        st.toast("Alterações salvas.", icon="✅")
 
+    with container.form(f"{chave}_form", border=False, enter_to_submit=False):
+        editor = st.data_editor(
+            tabela,
+            use_container_width=True,
+            num_rows="dynamic",
+            hide_index=True,
+            key=f"{chave}_v{versao}",
+            column_config=configuracao,
+        )
+        enviar = st.form_submit_button("Salvar", type="primary")
 
-def editor_com_salvamento_automatico(container, tabela: pd.DataFrame, chave: str, salvar, configuracao: dict) -> None:
-    """Persiste as edições do data editor no rerun provocado por cada alteração."""
-    editor = container.data_editor(
-        tabela,
-        use_container_width=True,
-        num_rows="dynamic",
-        hide_index=True,
-        key=chave,
-        column_config=configuracao,
-    )
-    assinatura = assinatura_tabela(editor)
-    chave_salva = f"{chave}_assinatura_salva"
-    if chave_salva not in st.session_state:
-        st.session_state[chave_salva] = assinatura
-        return
-    if st.session_state[chave_salva] == assinatura:
+    if not enviar:
         return
     try:
         salvar(editor)
     except ValueError as erro:
         container.warning(str(erro))
     else:
-        st.session_state[chave_salva] = assinatura
+        # Reinicia apenas o editor salvo para não reaplicar suas edições
+        # sobre os dados que serão recarregados do banco no próximo rerun.
+        st.session_state[chave_versao] = versao + 1
+        st.session_state[chave_sucesso] = True
         st.rerun()
 
 
@@ -759,9 +762,9 @@ def dashboard(Sessao) -> None:
 
     painel_despesas = st.container(border=True)
     painel_despesas.markdown(f'<div class="panel-title">Planilha de despesas — {mes_nome}</div>', unsafe_allow_html=True)
-    painel_despesas.caption("A primeira versão é copiada do mês anterior. Alterações são salvas automaticamente.")
+    painel_despesas.caption("A primeira versão é copiada do mês anterior. Clique em Salvar para gravar as alterações.")
     despesas = carregar_planejamento_mensal(Sessao, mes_timestamp)
-    editor_com_salvamento_automatico(
+    editor_com_salvamento_manual(
         painel_despesas,
         despesas,
         f"planejamento_{chave_mes}",
@@ -775,9 +778,9 @@ def dashboard(Sessao) -> None:
 
     painel_receitas = st.container(border=True)
     painel_receitas.markdown(f'<div class="panel-title">Planilha de receitas — {mes_nome}</div>', unsafe_allow_html=True)
-    painel_receitas.caption("Adicione, altere ou remova receitas. As alterações são salvas automaticamente.")
+    painel_receitas.caption("Adicione, altere ou remova receitas. Clique em Salvar para gravar as alterações.")
     receitas = carregar_lancamentos_mensais(Sessao, mes_timestamp, "receita")
-    editor_com_salvamento_automatico(
+    editor_com_salvamento_manual(
         painel_receitas,
         receitas,
         f"receitas_{chave_mes}",
@@ -787,9 +790,9 @@ def dashboard(Sessao) -> None:
 
     painel_investimentos = st.container(border=True)
     painel_investimentos.markdown(f'<div class="panel-title">Planilha de investimentos — {mes_nome}</div>', unsafe_allow_html=True)
-    painel_investimentos.caption("Adicione, altere ou remova investimentos. As alterações são salvas automaticamente.")
+    painel_investimentos.caption("Adicione, altere ou remova investimentos. Clique em Salvar para gravar as alterações.")
     investimentos = carregar_lancamentos_mensais(Sessao, mes_timestamp, "investimento")
-    editor_com_salvamento_automatico(
+    editor_com_salvamento_manual(
         painel_investimentos,
         investimentos,
         f"investimentos_{chave_mes}",
